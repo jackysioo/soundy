@@ -1,5 +1,4 @@
 // Following Punch Through BLE tutorial https://punchthrough.com/android-ble-guide/
-
 package com.example.soundy
 
 import android.Manifest
@@ -27,16 +26,27 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.example.soundy.databinding.ActivityMainBinding
+import androidx.recyclerview.widget.SimpleItemAnimator
 
 private const val PERMISSION_REQUEST_CODE = 1
 
+@SuppressLint("MissingPermission")
 class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
 
     private val bleScanner by lazy {
         bluetoothAdapter.bluetoothLeScanner
+    }
+
+    private val scanResults = mutableListOf<ScanResult>()
+    private val scanResultAdapter: ScanResultAdapter by lazy {
+        ScanResultAdapter(scanResults) {
+            // TODO: Implement
+        }
     }
 
     private val bluetoothAdapter: BluetoothAdapter by lazy {
@@ -61,10 +71,20 @@ class MainActivity : AppCompatActivity() {
     private val scanCallback = object : ScanCallback() {
         @SuppressLint("MissingPermission")
         override fun onScanResult(callbackType: Int, result: ScanResult) {
-            with(result.device) {
-
-                Log.i("ScanCallback", "Found BLE device! Name: ${name ?: "Unnamed"}, address: $address")
+            val indexQuery = scanResults.indexOfFirst { it.device.address == result.device.address }
+            if (indexQuery != -1) { // A Scan result already exist with the same address
+                scanResults[indexQuery] = result
+                scanResultAdapter.notifyItemChanged(indexQuery)
+            }else{
+                with(result.device) {
+                    Log.i("ScanCallback", "Found BLE device! Name: ${name ?: "Unnamed"}, address: $address")
+                }
+                scanResults.add(result)
+                scanResultAdapter.notifyItemInserted(scanResults.size - 1)
             }
+        }
+        override fun onScanFailed(errorCode: Int) {
+            Log.e("ScanCallback", "onScanFailed: code $errorCode")
         }
     }
 
@@ -105,6 +125,7 @@ class MainActivity : AppCompatActivity() {
                 startBleScan()
             }
         }
+        setupRecyclerView()
 
     }
     /**
@@ -136,6 +157,8 @@ class MainActivity : AppCompatActivity() {
         if (!hasRequiredBluetoothPermissions()) {
             requestRelevantRuntimePermissions()
         } else {
+            scanResults.clear()
+            scanResultAdapter.notifyDataSetChanged()
             bleScanner.startScan(null, scanSettings, scanCallback)
             isScanning = true
         }
@@ -221,6 +244,22 @@ class MainActivity : AppCompatActivity() {
                 // Unexpected scenario encountered when handling permissions
                 recreate()
             }
+        }
+    }
+
+    private fun setupRecyclerView() {
+        binding.scanResultsRecyclerView.apply {
+            adapter = scanResultAdapter
+            layoutManager = LinearLayoutManager(
+                this@MainActivity,
+                RecyclerView.VERTICAL,
+                false
+            )
+            isNestedScrollingEnabled = false
+        }
+        val animator = binding.scanResultsRecyclerView.itemAnimator
+        if (animator is SimpleItemAnimator) {
+            animator.supportsChangeAnimations = false
         }
     }
 }
