@@ -339,24 +339,6 @@ class MainActivity : AppCompatActivity() {
         requestBluetoothPermissions()
     }
 
-    private fun requestLocationPermission() = runOnUiThread {
-        AlertDialog.Builder(this)
-            .setTitle("Location permission required")
-            .setMessage(
-                "Starting from Android M (6.0), the system requires apps to be granted " +
-                        "location access in order to scan for BLE devices."
-            )
-            .setCancelable(false)
-            .setPositiveButton(android.R.string.ok) { _, _ ->
-                ActivityCompat.requestPermissions(
-                    this,
-                    arrayOf(Manifest.permission.ACCESS_FINE_LOCATION),
-                    PERMISSION_REQUEST_CODE
-                )
-            }
-            .show()
-    }
-
 
     private fun requestBluetoothPermissions() = runOnUiThread {
         AlertDialog.Builder(this)
