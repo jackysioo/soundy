@@ -1,12 +1,14 @@
-// Following Punch Through BLE tutorial https://punchthrough.com/android-ble-guide/
 package com.example.soundy
 
 import android.Manifest
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothGatt
+import android.bluetooth.BluetoothGattCallback
+import android.bluetooth.BluetoothGattCharacteristic
 import android.bluetooth.BluetoothManager
-import android.bluetooth.le.BluetoothLeScanner
+import android.bluetooth.BluetoothProfile
 import android.bluetooth.le.ScanCallback
 import android.bluetooth.le.ScanResult
 import android.bluetooth.le.ScanSettings
@@ -18,20 +20,31 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
-import android.view.View
-import android.widget.Button
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.annotation.RequiresApi
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
-import com.example.soundy.databinding.ActivityMainBinding
 import androidx.recyclerview.widget.SimpleItemAnimator
+import com.example.soundy.databinding.ActivityMainBinding
+import java.util.UUID
 
 private const val PERMISSION_REQUEST_CODE = 1
+private const val GATT_MAX_MTU_SIZE = 517
+
+fun BluetoothGattCharacteristic.containsProperty(property: Int): Boolean =
+    properties and property != 0
+
+fun BluetoothGattCharacteristic.isReadable(): Boolean =
+    containsProperty(BluetoothGattCharacteristic.PROPERTY_READ)
+
+fun BluetoothGattCharacteristic.isWritable(): Boolean =
+    containsProperty(BluetoothGattCharacteristic.PROPERTY_WRITE)
+
+fun BluetoothGattCharacteristic.isWritableWithoutResponse(): Boolean =
+    containsProperty(BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE)
 
 @SuppressLint("MissingPermission")
 class MainActivity : AppCompatActivity() {
@@ -42,12 +55,163 @@ class MainActivity : AppCompatActivity() {
         bluetoothAdapter.bluetoothLeScanner
     }
 
+    private var bluetoothGatt: BluetoothGatt? = null
+
     private val scanResults = mutableListOf<ScanResult>()
     private val scanResultAdapter: ScanResultAdapter by lazy {
-        ScanResultAdapter(scanResults) {
-            // TODO: Implement
+        ScanResultAdapter(scanResults) { result ->
+            if (isScanning) {
+                stopBleScan()
+            }
+            with(result.device) {
+                Log.w("ScanResultAdapter", "Connecting to $address")
+                connectGatt(this@MainActivity, false, gattCallback)
+            }
         }
     }
+
+    private val gattCallback = object : BluetoothGattCallback() {
+        override fun onConnectionStateChange(gatt: BluetoothGatt, status: Int, newState: Int) {
+            val deviceAddress = gatt.device.address
+            if (status == BluetoothGatt.GATT_SUCCESS) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    Log.w("BluetoothGattCallback", "Successfully connected to $deviceAddress")
+                    bluetoothGatt = gatt
+                    Handler(Looper.getMainLooper()).post {
+                        bluetoothGatt?.discoverServices()
+                    }
+                    bluetoothGatt?.requestMtu(GATT_MAX_MTU_SIZE)
+//
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    Log.w("BluetoothGattCallback", "Successfully disconnected from $deviceAddress")
+                    gatt.close()
+                }
+            } else {
+                Log.w("BluetoothGattCallback", "Error $status encountered for $deviceAddress! Disconnecting...")
+                gatt.close()
+            }
+        }
+
+        override fun onServicesDiscovered(gatt: BluetoothGatt?, status: Int) {
+            with(gatt) {
+                Log.w("BluetoothGattCallback", "Discovered ${this?.services?.size} services for ${this?.device?.address}")
+                this?.printGattTable() // See implementation just above this section
+                // Consider connection setup as complete here
+                writeSoundy()
+
+            }
+        }
+
+        override fun onMtuChanged(gatt: BluetoothGatt?, mtu: Int, status: Int) {
+            Log.w("BluetoothGattCallback", "ATT MTU changed to $mtu, success:${status == BluetoothGatt.GATT_SUCCESS}")
+        }
+
+        override fun onCharacteristicRead(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray,
+            status: Int
+        ) {
+            val uuid = characteristic.uuid
+            when (status) {
+                BluetoothGatt.GATT_SUCCESS -> {
+                    Log.i("BluetoothGattCallback", "Read characteristic $uuid:\n${value.toHexString()}")
+                }
+                BluetoothGatt.GATT_READ_NOT_PERMITTED -> {
+                    Log.e("BluetoothGattCallback", "Read not permitted for $uuid!")
+                }
+                else -> {
+                    Log.e("BluetoothGattCallback", "Characteristic read failed for $uuid, error: $status")
+                }
+            }
+        }
+        // ... somewhere outside BluetoothGattCallback
+        fun ByteArray.toHexString(): String =
+            joinToString(separator = " ", prefix = "0x") { String.format("%02X", it) }
+
+        override fun onCharacteristicWrite(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            status: Int
+        ) {
+            with(characteristic) {
+                when (status) {
+                    BluetoothGatt.GATT_SUCCESS -> {
+                        Log.i("BluetoothGattCallback", "Wrote to characteristic $uuid")
+                    }
+                    BluetoothGatt.GATT_INVALID_ATTRIBUTE_LENGTH -> {
+                        Log.e("BluetoothGattCallback", "Write exceeded connection ATT MTU!")
+                    }
+                    BluetoothGatt.GATT_WRITE_NOT_PERMITTED -> {
+                        Log.e("BluetoothGattCallback", "Write not permitted for $uuid!")
+                    }
+                    else -> {
+                        Log.e("BluetoothGattCallback", "Characteristic write failed for $uuid, error: $status")
+                    }
+                }
+            }
+        }
+
+        override fun onCharacteristicChanged(
+            gatt: BluetoothGatt,
+            characteristic: BluetoothGattCharacteristic,
+            value: ByteArray
+        ) {
+            Log.i("BluetoothGattCallback", "Characteristic changed for ${characteristic.uuid} | value: ${value.toHexString()}")
+        }
+
+    }
+
+    private fun BluetoothGatt.printGattTable() {
+        if(services.isEmpty()){
+            Log.i("printGattTable", "No service and characteristic available, call discoverServices() first?")
+            return
+        }
+        services.forEach{ service ->
+            val characteristicsTable = service.characteristics.joinToString(
+                separator = "\n|--",
+                prefix = "|--"
+            ){ it.uuid.toString() }
+            Log.i("printGattTable", " \nService ${service.uuid}\nCharacteristics:\n$characteristicsTable" )
+        }
+    }
+
+    fun writeCharacteristic(characteristic: BluetoothGattCharacteristic, payload: ByteArray) {
+        val writeType = when {
+            characteristic.isWritable() -> BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT
+            characteristic.isWritableWithoutResponse() -> {
+                BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+            }
+            else -> error("Characteristic ${characteristic.uuid} cannot be written to")
+        }
+        Log.i("writeCharacteristic", "writeType {$writeType}")
+        bluetoothGatt?.let { gatt ->
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                gatt.writeCharacteristic(characteristic, payload, writeType)
+                Log.i("writeCharacteristic", "wrote it")
+            }
+        } ?: error("Not connected to a BLE device!")
+    }
+
+    private fun writeSoundy() {
+
+        val soundyServiceUuid = UUID.fromString("0000beef-0000-1000-8000-00805f9b34fb")
+        val soundyWriteCharUuid = UUID.fromString("0000face-0000-1000-8000-00805f9b34fb")
+        val soundyService = bluetoothGatt?.getService(soundyServiceUuid)
+        Log.i("writeSoundy", "SoundyService {$soundyService}")
+        val soundyCharacteristics = soundyService?.characteristics
+        Log.i("writeSoundy", "SoundyCharacteristics {$soundyCharacteristics}")
+        val soundyChar = bluetoothGatt?.getService(soundyServiceUuid)?.getCharacteristic(soundyWriteCharUuid)
+        Log.i("writeSoundy", "SoundyIsWritable {$soundyChar}")
+        if (soundyChar?.isWritable() == true) {
+            writeCharacteristic(soundyChar, "Hellooooo".toByteArray())
+        }
+        if (soundyChar?.isReadable() == true) {
+            bluetoothGatt?.readCharacteristic(soundyChar)
+        }
+
+    }
+
 
     private val bluetoothAdapter: BluetoothAdapter by lazy {
         val bluetoothManager = getSystemService(Context.BLUETOOTH_SERVICE) as BluetoothManager
